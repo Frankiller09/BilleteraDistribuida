@@ -156,6 +156,9 @@ private fun PantallaAcceso(
     val registro = pantalla == "REGISTRO"
 
     var nombre by rememberSaveable { mutableStateOf("") }
+    var cedula by rememberSaveable { mutableStateOf("") }
+    var tipoCuenta by rememberSaveable { mutableStateOf("NORMAL") }
+    var aliasCuenta by rememberSaveable { mutableStateOf("Principal") }
     var usuario by rememberSaveable { mutableStateOf("") }
     var password by remember(pantalla) { mutableStateOf("") }
     var visible by remember(pantalla) { mutableStateOf(false) }
@@ -273,6 +276,26 @@ private fun PantallaAcceso(
                                     )
                                 }
 
+                                if (registro) {
+                                    OutlinedTextField(
+                                        value = cedula,
+                                        onValueChange = { cedula = it.filter { c -> c in '0'..'9' }.take(10) },
+                                        label = { Text("Cédula") },
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                        singleLine = true, enabled = !vm.cargando,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    SelectorFs("Tipo de cuenta", tipoCuenta,
+                                        listOf("NORMAL" to "Normal", "AHORROS" to "Ahorros"),
+                                        !vm.cargando) { tipoCuenta = it }
+                                    OutlinedTextField(
+                                        value = aliasCuenta, onValueChange = { aliasCuenta = it.take(40) },
+                                        label = { Text("Alias: Personal, Trabajo…") },
+                                        singleLine = true, enabled = !vm.cargando,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+
                                 OutlinedTextField(
                                     value = usuario,
                                     onValueChange = { usuario = it },
@@ -314,7 +337,7 @@ private fun PantallaAcceso(
                                     onClick = {
                                         if (registro) {
                                             vm.registrar(
-                                                nombre, usuario, password
+                                                nombre, usuario, password, cedula, tipoCuenta, aliasCuenta
                                             )
                                         } else {
                                             vm.ingresar(usuario, password)
@@ -415,126 +438,6 @@ private fun BotonAcceso(
 }
 
 @Composable
-private fun InicioCuenta(
-    cuenta: Cuenta,
-    vm: BilleteraViewModel
-) {
-    Scaffold(containerColor = Color.White) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState())
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(22.dp)
-        ) {
-            Spacer(Modifier.height(8.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Image(
-                    painter = painterResource(R.drawable.logo_fs),
-                    contentDescription = "FS",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.width(86.dp).height(32.dp)
-                )
-
-                Text(
-                    text = "MI BILLETERA",
-                    color = Marino,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text("Bienvenido,", color = Gris, fontSize = 15.sp)
-
-                Text(
-                    text = cuenta.nombre,
-                    color = Texto,
-                    fontSize = 28.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            Surface(
-                color = VerdeTarjeta,
-                shape = RoundedCornerShape(26.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(26.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    Text(
-                        text = "SALDO DISPONIBLE",
-                        color = Marino,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    Text(
-                        text = dinero(cuenta.saldoCentavos),
-                        color = Texto,
-                        fontSize = 40.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-
-                    HorizontalDivider(
-                        color = Marino.copy(alpha = 0.15f)
-                    )
-
-                    Text(
-                        text = "Cuenta #${cuenta.id}",
-                        color = Texto,
-                        fontWeight = FontWeight.SemiBold
-                    )
-
-                    Text(
-                        text = "@${cuenta.usuario}",
-                        color = Marino,
-                        fontSize = 14.sp
-                    )
-                }
-            }
-
-            Text(
-                text = "Último saldo consultado en el servidor.",
-                color = Gris,
-                fontSize = 13.sp
-            )
-
-            Button(
-                onClick = { vm.actualizarSaldo() },
-                enabled = !vm.cargando,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth().heightIn(min = 54.dp)
-            ) {
-                Text("Actualizar saldo")
-            }
-
-            if (vm.cargando) {
-                LinearProgressIndicator(
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            vm.mensaje?.let {
-                Text(it, color = Marino, fontSize = 14.sp)
-            }
-
-            OutlinedButton(
-                onClick = { vm.cerrarSesion() },
-                enabled = !vm.cargando,
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Cerrar sesión")
-            }
-        }
-    }
+private fun InicioCuenta(cuenta: Cuenta, vm: BilleteraViewModel) {
+    PanelBilletera(vm)
 }
