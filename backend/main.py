@@ -3,6 +3,12 @@ import json
 import secrets
 import sqlite3
 import time
+import asyncio
+
+from fastapi import WebSocket, WebSocketDisconnect
+from starlette.concurrency import run_in_threadpool
+
+from realtime import gestor
 
 from contextlib import asynccontextmanager
 from uuid import uuid4
@@ -73,12 +79,13 @@ def obtener_sesion(
     token_hash = hash_token(credenciales.credentials)
 
     with conexion() as db:
-        fila = db.execute(
+                fila = db.execute(
             """
             SELECT u.id AS usuario_id,
                    u.nombre,
                    u.usuario,
-                   c.id AS cuenta_id
+                   c.id AS cuenta_id,
+                   s.expira AS expira
             FROM sesiones s
             JOIN usuarios u ON u.id = s.usuario_id
             JOIN cuentas c ON c.usuario_id = u.id
@@ -183,14 +190,22 @@ def login(datos: Login):
         "expires_at": expira,
     }
 
-
-@app.post("/auth/logout", tags=["Autenticación"])
-def logout(sesion=Depends(obtener_sesion)):
+def eliminar_sesion_bd(token_hash: str):
     with conexion(escritura=True) as db:
         db.execute(
             "DELETE FROM sesiones WHERE token_hash = ?",
-            (sesion["token_hash"],),
+            (token_hash,),
         )
+
+
+@app.post("/auth/logout", tags=["Autenticación"])
+async def logout(sesion=Depends(obtener_sesion)):
+    await run_in_threadpool(
+        eliminar_sesion_bd,
+        sesion["token_hash"],
+    )
+
+    await gestor.cerrar_sesion(sesion["token_hash"])
 
     return {"mensaje": "Sesión cerrada."}
 
@@ -405,31 +420,120 @@ def ejecutar_operacion(tipo: str, datos: Operacion, sesion: dict):
                 ),
             )
 
-    # Llegamos aquí después de confirmar el commit.
+    return respuesta
+
+async def operar_y_notificar(tipo, datos, sesion):
+    respuesta = await run_in_threadpool(
+        ejecutar_operacion,
+        tipo,
+        datos,
+        sesion,
+    )
+
+    # ejecutar_operacion ya terminó y confirmó su transacción.
+    cuentas = {sesion["cuenta_id"]}
+
+    if tipo == "TRANSFERENCIA":
+        cuentas.add(datos.cuenta_destino_id)
+
+    await gestor.notificar(
+        cuentas,
+        respuesta["operacion_id"],
+    )
+
     return respuesta
 
 
 @app.post("/operaciones/deposito", tags=["Operaciones"])
-def deposito(datos: Operacion, sesion=Depends(obtener_sesion)):
-    return ejecutar_operacion("DEPOSITO", datos, sesion)
+async def deposito(
+    datos: Operacion,
+    sesion=Depends(obtener_sesion),
+):
+    return await operar_y_notificar("DEPOSITO", datos, sesion)
 
 
 @app.post("/operaciones/retiro", tags=["Operaciones"])
-def retiro(datos: Operacion, sesion=Depends(obtener_sesion)):
-    return ejecutar_operacion("RETIRO", datos, sesion)
+async def retiro(
+    datos: Operacion,
+    sesion=Depends(obtener_sesion),
+):
+    return await operar_y_notificar("RETIRO", datos, sesion)
 
 
 @app.post("/operaciones/transferencia", tags=["Operaciones"])
-def transferencia(
+async def transferencia(
     datos: Transferencia,
     sesion=Depends(obtener_sesion),
 ):
-    return ejecutar_operacion("TRANSFERENCIA", datos, sesion)
+    return await operar_y_notificar("TRANSFERENCIA", datos, sesion)
 
 
 @app.post("/operaciones/pago-servicio", tags=["Operaciones"])
-def pago_servicio(
+async def pago_servicio(
     datos: PagoServicio,
     sesion=Depends(obtener_sesion),
 ):
-    return ejecutar_operacion("PAGO_SERVICIO", datos, sesion)
+    return await operar_y_notificar("PAGO_SERVICIO", datos, sesion)
+
+@app.websocket("/ws")
+async def websocket_cuenta(websocket: WebSocket):
+    # Android y Postman enviarán el token en el encabezado.
+    autorizacion = websocket.headers.get("authorization", "")
+    partes = autorizacion.split()
+
+    if len(partes) != 2 or partes[0].lower() != "bearer":
+        await websocket.close(code=1008)
+        return
+
+    credenciales = HTTPAuthorizationCredentials(
+        scheme="Bearer",
+        credentials=partes[1],
+    )
+
+    try:
+        sesion = await run_in_threadpool(
+            obtener_sesion,
+            credenciales,
+        )
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    gestor.registrar(websocket, sesion)
+
+    try:
+        await gestor.enviar(
+            websocket,
+            {
+                "evento": "conectado",
+                "cuenta_id": sesion["cuenta_id"],
+            },
+        )
+
+        while True:
+            try:
+                mensaje = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=30,
+                )
+            except asyncio.TimeoutError:
+                mensaje = None
+
+            # Revalida periódicamente la sesión y su vencimiento.
+            await run_in_threadpool(obtener_sesion, credenciales)
+
+            if mensaje == "ping":
+                await gestor.enviar(
+                    websocket,
+                    {"evento": "pong"},
+                )
+
+    except HTTPException:
+        await gestor.cerrar(websocket)
+
+    except WebSocketDisconnect:
+        pass
+
+    finally:
+        gestor.eliminar(websocket)
