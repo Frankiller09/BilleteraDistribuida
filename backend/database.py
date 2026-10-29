@@ -292,3 +292,47 @@ def migrar_multicuenta():
 
     finally:
         db.close()
+
+
+def migrar_confirmaciones():
+    with conexion(escritura=True) as db:
+        columnas = {
+            fila["name"]
+            for fila in db.execute("PRAGMA table_info(operaciones)")
+        }
+        if "actor_id" not in columnas:
+            db.execute("""
+                ALTER TABLE operaciones
+                ADD COLUMN actor_id INTEGER REFERENCES usuarios(id)
+            """)
+        db.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_operaciones_actor
+            ON operaciones(actor_id, solicitud_id)
+        """)
+
+        columnas = {
+            fila["name"]
+            for fila in db.execute("PRAGMA table_info(movimientos)")
+        }
+        if "metadatos" not in columnas:
+            db.execute("""
+                ALTER TABLE movimientos
+                ADD COLUMN metadatos TEXT NOT NULL DEFAULT '{}'
+            """)
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS confirmaciones (
+                token_hash TEXT PRIMARY KEY,
+                sesion_hash TEXT NOT NULL,
+                usuario_id INTEGER NOT NULL REFERENCES usuarios(id),
+                tipo TEXT NOT NULL,
+                origen_id INTEGER REFERENCES cuentas(id),
+                destino_id INTEGER NOT NULL REFERENCES cuentas(id),
+                numero_cuenta TEXT NOT NULL,
+                titular TEXT NOT NULL,
+                monto_centavos INTEGER NOT NULL
+                    CHECK (monto_centavos > 0),
+                expira INTEGER NOT NULL,
+                usada INTEGER NOT NULL DEFAULT 0
+            )
+        """)

@@ -1,5 +1,4 @@
 import hashlib
-import json
 import secrets
 import sqlite3
 import time
@@ -11,8 +10,6 @@ from starlette.concurrency import run_in_threadpool
 from realtime import gestor
 
 from contextlib import asynccontextmanager
-from uuid import uuid4
-
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -23,6 +20,7 @@ from database import (
     inicializar_bd,
     migrar_cedula,
     migrar_multicuenta,
+    migrar_confirmaciones,
     crear_cuenta_bd,
 )
 
@@ -31,9 +29,15 @@ from schemas import (
     Operacion,
     PagoServicio,
     Registro,
-    Transferencia,
+    ValidarDestinatario,
+    ConfirmarDestino,
     CompletarCedula,
     NuevaCuenta,
+)
+from operaciones import (
+    ejecutar_operacion,
+    validar_destinatario_bd,
+    registrar_consultas,
 )
 
 
@@ -49,12 +53,13 @@ async def lifespan(app: FastAPI):
     inicializar_bd()
     migrar_cedula()
     migrar_multicuenta()
+    migrar_confirmaciones()
     yield
 
 
 app = FastAPI(
     title="API Billetera Distribuida",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -125,7 +130,7 @@ def obtener_sesion(
 
 @app.get("/inicio", tags=["Estado"])
 def inicio():
-    return {"estado": "activo", "version": "0.2.0"}
+    return {"estado": "activo", "version": "0.3.0"}
 
 
 @app.post("/auth/registro", status_code=201, tags=["Autenticación"])
@@ -150,12 +155,13 @@ def registrar(datos: Registro):
                 ),
             )
 
-            cursor = db.execute(
-                "INSERT INTO cuentas (usuario_id) VALUES (?)",
-                (usuario_id,),
+            usuario_id = cursor.lastrowid
+            cuenta = crear_cuenta_bd(
+                db,
+                usuario_id,
+                datos.tipo_cuenta,
+                datos.alias_cuenta,
             )
-
-            cuenta_id = cursor.lastrowid
 
     except sqlite3.IntegrityError:
         raise HTTPException(
@@ -165,7 +171,7 @@ def registrar(datos: Registro):
 
     return {
         "mensaje": "Usuario registrado.",
-        "cuenta_id": cuenta_id,
+        "cuenta_id": cuenta["cuenta_id"],
         "numero_cuenta": cuenta["numero_cuenta"],
         "tipo": cuenta["tipo"],
         "alias": cuenta["alias"],
@@ -275,226 +281,21 @@ def historial(
     return [dict(fila) for fila in filas]
 
 
-def ejecutar_operacion(tipo: str, datos: Operacion, sesion: dict):
-    cuenta_id = datos.cuenta_origen_id or sesion["cuenta_id"]
-    monto = datos.monto_centavos
-    solicitud_id = str(datos.solicitud_id)
-
-    contenido = json.dumps(
-        {
-            "tipo": tipo,
-            **datos.model_dump(mode="json", exclude_none=True),
-        },
-        sort_keys=True,
-    )
-
-    with conexion(escritura=True) as db:
-
-        propia = db.execute(
-            """
-            SELECT id
-            FROM cuentas
-            WHERE id = ? AND usuario_id = ?
-            """,
-            (cuenta_id, sesion["usuario_id"]),
-        ).fetchone()
-
-        if propia is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Cuenta no encontrada.",
-            )
-
-        anterior = db.execute(
-            """
-            SELECT datos, respuesta
-            FROM operaciones
-            WHERE cuenta_id = ? AND solicitud_id = ?
-            """,
-            (cuenta_id, solicitud_id),
-        ).fetchone()
-
-        if anterior:
-            if anterior["datos"] != contenido:
-                raise HTTPException(
-                    status_code=409,
-                    detail="La solicitud_id ya se usó con otros datos.",
-                )
-
-            return json.loads(anterior["respuesta"])
-
-        destino_id = None
-
-        if tipo == "TRANSFERENCIA":
-            destino_id = datos.cuenta_destino_id
-
-            if destino_id == cuenta_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail="No puedes transferir a tu misma cuenta.",
-                )
-
-            destino = db.execute(
-                "SELECT id FROM cuentas WHERE id = ?",
-                (destino_id,),
-            ).fetchone()
-
-            if destino is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail="La cuenta de destino no existe.",
-                )
-
-        if tipo == "DEPOSITO":
-            db.execute(
-                """
-                UPDATE cuentas
-                SET saldo_centavos = saldo_centavos + ?
-                WHERE id = ?
-                """,
-                (monto, cuenta_id),
-            )
-        else:
-            cursor = db.execute(
-                """
-                UPDATE cuentas
-                SET saldo_centavos = saldo_centavos - ?
-                WHERE id = ? AND saldo_centavos >= ?
-                """,
-                (monto, cuenta_id, monto),
-            )
-
-            if cursor.rowcount != 1:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Saldo insuficiente.",
-                )
-
-        if destino_id is not None:
-            db.execute(
-                """
-                UPDATE cuentas
-                SET saldo_centavos = saldo_centavos + ?
-                WHERE id = ?
-                """,
-                (monto, destino_id),
-            )
-
-        saldo = db.execute(
-            "SELECT saldo_centavos FROM cuentas WHERE id = ?",
-            (cuenta_id,),
-        ).fetchone()["saldo_centavos"]
-
-        operacion_id = str(uuid4())
-
-        respuesta = {
-            "operacion_id": operacion_id,
-            "solicitud_id": solicitud_id,
-            "tipo": tipo,
-            "monto_centavos": monto,
-            "saldo_centavos": saldo,
-            "mensaje": "Operación confirmada.",
-        }
-
-        db.execute(
-            """
-            INSERT INTO operaciones
-                (id, cuenta_id, solicitud_id, datos, respuesta)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                operacion_id,
-                cuenta_id,
-                solicitud_id,
-                contenido,
-                json.dumps(respuesta),
-            ),
-        )
-
-        if tipo == "TRANSFERENCIA":
-            tipo_movimiento = "TRANSFERENCIA_ENVIADA"
-            detalle = f"Transferencia a cuenta {destino_id}"
-        elif tipo == "PAGO_SERVICIO":
-            tipo_movimiento = tipo
-            detalle = f"{datos.servicio}: {datos.referencia}"
-        else:
-            tipo_movimiento = tipo
-            detalle = (
-                "Depósito simulado"
-                if tipo == "DEPOSITO"
-                else "Retiro simulado"
-            )
-
-        db.execute(
-            """
-            INSERT INTO movimientos (
-                operacion_id, cuenta_id, tipo, monto_centavos,
-                saldo_resultante_centavos, detalle
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                operacion_id,
-                cuenta_id,
-                tipo_movimiento,
-                monto,
-                saldo,
-                detalle,
-            ),
-        )
-
-        if destino_id is not None:
-            saldo_destino = db.execute(
-                "SELECT saldo_centavos FROM cuentas WHERE id = ?",
-                (destino_id,),
-            ).fetchone()["saldo_centavos"]
-
-            db.execute(
-                """
-                INSERT INTO movimientos (
-                    operacion_id, cuenta_id, tipo, monto_centavos,
-                    saldo_resultante_centavos, detalle
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    operacion_id,
-                    destino_id,
-                    "TRANSFERENCIA_RECIBIDA",
-                    monto,
-                    saldo_destino,
-                    f"Transferencia desde cuenta {cuenta_id}",
-                ),
-            )
-
-    return respuesta
-
 async def operar_y_notificar(tipo, datos, sesion):
-    respuesta = await run_in_threadpool(
+    respuesta, cuentas = await run_in_threadpool(
         ejecutar_operacion,
         tipo,
         datos,
         sesion,
     )
-
-    # ejecutar_operacion ya terminó y confirmó su transacción.
-    cuenta_operada = datos.cuenta_origen_id or sesion["cuenta_id"]
-    cuentas = {cuenta_operada}
-
-    if tipo == "TRANSFERENCIA":
-        cuentas.add(datos.cuenta_destino_id)
-
-    await gestor.notificar(
-        cuentas,
-        respuesta["operacion_id"],
-    )
-
+    if cuentas:
+        await gestor.notificar(cuentas, respuesta["operacion_id"])
     return respuesta
 
 
 @app.post("/operaciones/deposito", tags=["Operaciones"])
 async def deposito(
-    datos: Operacion,
+    datos: ConfirmarDestino,
     sesion=Depends(obtener_sesion),
 ):
     return await operar_y_notificar("DEPOSITO", datos, sesion)
@@ -510,10 +311,18 @@ async def retiro(
 
 @app.post("/operaciones/transferencia", tags=["Operaciones"])
 async def transferencia(
-    datos: Transferencia,
+    datos: ConfirmarDestino,
     sesion=Depends(obtener_sesion),
 ):
     return await operar_y_notificar("TRANSFERENCIA", datos, sesion)
+
+
+@app.post("/beneficiarios/validar", tags=["Operaciones"])
+def validar_beneficiario(
+    datos: ValidarDestinatario,
+    sesion=Depends(obtener_sesion),
+):
+    return validar_destinatario_bd(datos, sesion)
 
 
 @app.post("/operaciones/pago-servicio", tags=["Operaciones"])
@@ -703,36 +512,4 @@ def abrir_cuenta(
     return cuenta
 
 
-@app.get("/cuentas/{cuenta_id}/movimientos", tags=["Movimientos"])
-def historial_por_cuenta(
-    cuenta_id: int,
-    despues_de: int = Query(default=0, ge=0),
-    limite: int = Query(default=100, ge=1, le=500),
-    sesion=Depends(obtener_sesion),
-):
-    with conexion() as db:
-        cuenta = db.execute(
-            """
-            SELECT id FROM cuentas
-            WHERE id = ? AND usuario_id = ?
-            """,
-            (cuenta_id, sesion["usuario_id"]),
-        ).fetchone()
-
-        if cuenta is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Cuenta no encontrada.",
-            )
-
-        filas = db.execute(
-            """
-            SELECT * FROM movimientos
-            WHERE cuenta_id = ? AND id > ?
-            ORDER BY id ASC
-            LIMIT ?
-            """,
-            (cuenta_id, despues_de, limite),
-        ).fetchall()
-
-    return [dict(fila) for fila in filas]
+registrar_consultas(app, obtener_sesion)

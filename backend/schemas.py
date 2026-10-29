@@ -54,8 +54,7 @@ class Registro(ModeloBase):
     usuario: UsuarioTexto
     password: str = Field(min_length=8, max_length=128)
 
-    # Temporal: mantiene compatible el registro Android actual.
-    cedula: CedulaTexto | None = None
+    cedula: CedulaTexto
 
     tipo_cuenta: TipoCuenta = "NORMAL"
     alias_cuenta: AliasCuenta = "Principal"
@@ -83,8 +82,32 @@ class Operacion(ModeloBase):
     )
 
 
-class Transferencia(Operacion):
-    cuenta_destino_id: int = Field(strict=True, gt=0)
+class ValidarDestinatario(ModeloBase):
+    tipo: Literal["DEPOSITO", "TRANSFERENCIA"]
+    numero_cuenta: Annotated[
+        str,
+        StringConstraints(
+            strip_whitespace=True,
+            min_length=10,
+            max_length=10,
+            pattern=r"^[0-9]{10}$",
+        ),
+    ]
+    monto_centavos: int = Field(
+        strict=True,
+        gt=0,
+        le=100_000_000,
+    )
+    cuenta_origen_id: int | None = Field(
+        default=None,
+        strict=True,
+        gt=0,
+    )
+
+
+class ConfirmarDestino(ModeloBase):
+    solicitud_id: UUID
+    confirmacion_token: str = Field(min_length=20)
 
 
 class PagoServicio(Operacion):
