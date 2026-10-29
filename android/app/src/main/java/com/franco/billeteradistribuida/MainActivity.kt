@@ -264,6 +264,28 @@ private fun PantallaAcceso(
                                     fontSize = 14.sp
                                 )
 
+                                if (!registro && vm.sesionGuardadaDisponible && vm.usuarioSesionGuardada != null) {
+                                    Surface(
+                                        color = Color(0xFFF3F6F8),
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(Modifier.padding(10.dp)) {
+                                            Text(
+                                                "💾 Sesión local disponible: @${vm.usuarioSesionGuardada}",
+                                                fontSize = 12.sp,
+                                                color = Marino,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                            Text(
+                                                "Si no hay conexión, ingresa tu contraseña para acceder a tu historial guardado.",
+                                                fontSize = 11.sp,
+                                                color = Gris
+                                            )
+                                        }
+                                    }
+                                }
+
                                 if (registro) {
                                     OutlinedTextField(
                                         value = nombre,

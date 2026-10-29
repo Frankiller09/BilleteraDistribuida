@@ -17,6 +17,10 @@ __pycache__/
 *.sqlite-*
 *.sqlite3
 *.sqlite3-*
+*.db-wal
+*.db-shm
+*.db-journal
+backend/backups/
 
 # Android
 .gradle/
@@ -33,3 +37,11 @@ local.properties
 .vscode/
 Thumbs.db
 .DS_Store
+backend/backups/
+
+local.properties
+.gradle/
+.kotlin/
+**/build/
+*.jks
+*.keystore

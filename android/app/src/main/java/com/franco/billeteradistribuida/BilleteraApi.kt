@@ -18,7 +18,7 @@ data class Perfil(val nombre: String, val usuario: String, val cedula: String?)
 data class Servicio(val codigo: String, val nombre: String, val referencia: String)
 data class Movimiento(val id: Long, val tipo: String, val monto: Long, val saldo: Long,
                       val detalle: String, val fecha: String, val operacion: String, val ingreso: Boolean,
-                      val numero: String = "")
+                      val numero: String = "", val categoriaVisual: String = "")
 data class PaginaMovimientos(val items: List<Movimiento>, val siguiente: Long?)
 data class DiaResumen(val fecha: String, val ingresos: Long, val egresos: Long)
 data class Resumen(val ingresos: Long, val egresos: Long, val cantidad: Int, val dias: List<DiaResumen>)
@@ -134,7 +134,8 @@ class BilleteraApi {
     private fun movimiento(j: JSONObject) = Movimiento(j.getLong("id"), j.getString("tipo"),
         j.getLong("monto_centavos"), j.getLong("saldo_resultante_centavos"), j.getString("detalle"),
         j.getString("creado"), j.getString("operacion_id"), j.getString("direccion") == "INGRESO",
-        j.optString("numero_cuenta"))
+        j.optString("numero_cuenta"),
+        if (j.getString("tipo") == "PAGO_SERVICIO") "Servicio Básico" else j.getString("tipo"))
     suspend fun comprobante(token: String, id: Long) = movimiento(solicitar("/movimientos/$id", token) as JSONObject)
     suspend fun resumen(token: String, cuenta: Long, desde: String, hasta: String): Resumen {
         val j = solicitar("/cuentas/$cuenta/resumen?desde=$desde&hasta=$hasta", token) as JSONObject
