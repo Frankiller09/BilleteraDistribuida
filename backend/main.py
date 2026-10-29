@@ -18,7 +18,13 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pwdlib import PasswordHash
 
-from database import conexion, inicializar_bd, migrar_cedula
+from database import (
+    conexion,
+    inicializar_bd,
+    migrar_cedula,
+    migrar_multicuenta,
+    crear_cuenta_bd,
+)
 
 from schemas import (
     Login,
@@ -27,6 +33,7 @@ from schemas import (
     Registro,
     Transferencia,
     CompletarCedula,
+    NuevaCuenta,
 )
 
 
@@ -41,6 +48,7 @@ HASH_FICTICIO = password_hasher.hash("clave-interna-no-utilizada")
 async def lifespan(app: FastAPI):
     inicializar_bd()
     migrar_cedula()
+    migrar_multicuenta()
     yield
 
 
@@ -88,7 +96,7 @@ def obtener_sesion(
     token_hash = hash_token(credenciales.credentials)
 
     with conexion() as db:
-                fila = db.execute(
+        fila = db.execute(
             """
             SELECT u.id AS usuario_id,
                    u.nombre,
@@ -99,6 +107,8 @@ def obtener_sesion(
             JOIN usuarios u ON u.id = s.usuario_id
             JOIN cuentas c ON c.usuario_id = u.id
             WHERE s.token_hash = ? AND s.expira > ?
+            ORDER BY c.id ASC
+            LIMIT 1
             """,
             (token_hash, int(time.time())),
         ).fetchone()
@@ -140,8 +150,6 @@ def registrar(datos: Registro):
                 ),
             )
 
-            usuario_id = cursor.lastrowid
-
             cursor = db.execute(
                 "INSERT INTO cuentas (usuario_id) VALUES (?)",
                 (usuario_id,),
@@ -158,6 +166,9 @@ def registrar(datos: Registro):
     return {
         "mensaje": "Usuario registrado.",
         "cuenta_id": cuenta_id,
+        "numero_cuenta": cuenta["numero_cuenta"],
+        "tipo": cuenta["tipo"],
+        "alias": cuenta["alias"],
         "saldo_centavos": 0,
     }
 
@@ -618,3 +629,81 @@ def completar_cedula(
         "mensaje": "Cédula registrada.",
         "cedula": datos.cedula,
     }
+
+@app.get("/cuentas", tags=["Cuentas"])
+def mis_cuentas(sesion=Depends(obtener_sesion)):
+    with conexion() as db:
+        filas = db.execute(
+            """
+            SELECT id AS cuenta_id, numero_cuenta,
+                   tipo, alias, saldo_centavos
+            FROM cuentas
+            WHERE usuario_id = ?
+            ORDER BY id
+            """,
+            (sesion["usuario_id"],),
+        ).fetchall()
+
+    return [dict(fila) for fila in filas]
+
+
+@app.post("/cuentas", status_code=201, tags=["Cuentas"])
+def abrir_cuenta(
+    datos: NuevaCuenta,
+    sesion=Depends(obtener_sesion),
+):
+    with conexion(escritura=True) as db:
+        usuario = db.execute(
+            "SELECT cedula FROM usuarios WHERE id = ?",
+            (sesion["usuario_id"],),
+        ).fetchone()
+
+        if usuario is None or usuario["cedula"] is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Completa tu cédula antes de abrir otra cuenta.",
+            )
+
+        cuenta = crear_cuenta_bd(
+            db,
+            sesion["usuario_id"],
+            datos.tipo,
+            datos.alias,
+        )
+
+    return cuenta
+
+
+@app.get("/cuentas/{cuenta_id}/movimientos", tags=["Movimientos"])
+def historial_por_cuenta(
+    cuenta_id: int,
+    despues_de: int = Query(default=0, ge=0),
+    limite: int = Query(default=100, ge=1, le=500),
+    sesion=Depends(obtener_sesion),
+):
+    with conexion() as db:
+        cuenta = db.execute(
+            """
+            SELECT id FROM cuentas
+            WHERE id = ? AND usuario_id = ?
+            """,
+            (cuenta_id, sesion["usuario_id"]),
+        ).fetchone()
+
+        if cuenta is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Cuenta no encontrada.",
+            )
+
+        filas = db.execute(
+            """
+            SELECT * FROM movimientos
+            WHERE cuenta_id = ? AND id > ?
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (cuenta_id, despues_de, limite),
+        ).fetchall()
+
+    return [dict(fila) for fila in filas]

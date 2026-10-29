@@ -34,6 +34,17 @@ CedulaTexto = Annotated[
     ),
 ]
 
+TipoCuenta = Literal["NORMAL", "AHORROS"]
+
+AliasCuenta = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=2,
+        max_length=40,
+    ),
+]
+
 class ModeloBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -45,6 +56,9 @@ class Registro(ModeloBase):
 
     # Temporal: mantiene compatible el registro Android actual.
     cedula: CedulaTexto | None = None
+
+    tipo_cuenta: TipoCuenta = "NORMAL"
+    alias_cuenta: AliasCuenta = "Principal"
 
 
 class Login(ModeloBase):
@@ -78,3 +92,7 @@ class PagoServicio(Operacion):
 
 class CompletarCedula(ModeloBase):
     cedula: CedulaTexto
+
+class NuevaCuenta(ModeloBase):
+    tipo: TipoCuenta
+    alias: AliasCuenta
