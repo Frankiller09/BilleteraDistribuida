@@ -68,10 +68,18 @@ class Login(ModeloBase):
 
 class Operacion(ModeloBase):
     solicitud_id: UUID
+
     monto_centavos: int = Field(
         strict=True,
         gt=0,
         le=100_000_000,
+    )
+
+    # Si se omite, utiliza la primera cuenta por compatibilidad.
+    cuenta_origen_id: int | None = Field(
+        default=None,
+        strict=True,
+        gt=0,
     )
 
 

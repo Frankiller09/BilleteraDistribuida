@@ -276,16 +276,35 @@ def historial(
 
 
 def ejecutar_operacion(tipo: str, datos: Operacion, sesion: dict):
-    cuenta_id = sesion["cuenta_id"]
+    cuenta_id = datos.cuenta_origen_id or sesion["cuenta_id"]
     monto = datos.monto_centavos
     solicitud_id = str(datos.solicitud_id)
 
     contenido = json.dumps(
-        {"tipo": tipo, **datos.model_dump(mode="json")},
+        {
+            "tipo": tipo,
+            **datos.model_dump(mode="json", exclude_none=True),
+        },
         sort_keys=True,
     )
 
     with conexion(escritura=True) as db:
+
+        propia = db.execute(
+            """
+            SELECT id
+            FROM cuentas
+            WHERE id = ? AND usuario_id = ?
+            """,
+            (cuenta_id, sesion["usuario_id"]),
+        ).fetchone()
+
+        if propia is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Cuenta no encontrada.",
+            )
+
         anterior = db.execute(
             """
             SELECT datos, respuesta
@@ -459,7 +478,8 @@ async def operar_y_notificar(tipo, datos, sesion):
     )
 
     # ejecutar_operacion ya terminó y confirmó su transacción.
-    cuentas = {sesion["cuenta_id"]}
+    cuenta_operada = datos.cuenta_origen_id or sesion["cuenta_id"]
+    cuentas = {cuenta_operada}
 
     if tipo == "TRANSFERENCIA":
         cuentas.add(datos.cuenta_destino_id)
@@ -531,11 +551,20 @@ async def websocket_cuenta(websocket: WebSocket):
     gestor.registrar(websocket, sesion)
 
     try:
+        cuentas_usuario = await run_in_threadpool(
+            mis_cuentas,
+            sesion,
+        )
+
         await gestor.enviar(
             websocket,
             {
                 "evento": "conectado",
                 "cuenta_id": sesion["cuenta_id"],
+                "cuentas_ids": [
+                    cuenta["cuenta_id"]
+                    for cuenta in cuentas_usuario
+                ],
             },
         )
 
