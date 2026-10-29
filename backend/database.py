@@ -84,3 +84,29 @@ def inicializar_bd():
             CREATE INDEX IF NOT EXISTS idx_movimientos_cuenta
             ON movimientos(cuenta_id, id);
         """)
+    
+
+def migrar_cedula():
+    with conexion(escritura=True) as db:
+        columnas = {
+            fila["name"]
+            for fila in db.execute("PRAGMA table_info(usuarios)")
+        }
+
+        if "cedula" not in columnas:
+            db.execute("""
+                ALTER TABLE usuarios
+                ADD COLUMN cedula TEXT
+                CHECK (
+                    cedula IS NULL
+                    OR (
+                        length(cedula) = 10
+                        AND cedula NOT GLOB '*[^0-9]*'
+                    )
+                )
+            """)
+
+        db.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_cedula
+            ON usuarios(cedula)
+        """)

@@ -24,6 +24,15 @@ NombreTexto = Annotated[
     ),
 ]
 
+CedulaTexto = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=10,
+        max_length=10,
+        pattern=r"^[0-9]{10}$",
+    ),
+]
 
 class ModeloBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -33,6 +42,9 @@ class Registro(ModeloBase):
     nombre: NombreTexto
     usuario: UsuarioTexto
     password: str = Field(min_length=8, max_length=128)
+
+    # Temporal: mantiene compatible el registro Android actual.
+    cedula: CedulaTexto | None = None
 
 
 class Login(ModeloBase):
@@ -63,3 +75,6 @@ class PagoServicio(Operacion):
             max_length=60,
         ),
     ]
+
+class CompletarCedula(ModeloBase):
+    cedula: CedulaTexto

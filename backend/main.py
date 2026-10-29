@@ -18,8 +18,16 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pwdlib import PasswordHash
 
-from database import conexion, inicializar_bd
-from schemas import Login, Operacion, PagoServicio, Registro, Transferencia
+from database import conexion, inicializar_bd, migrar_cedula
+
+from schemas import (
+    Login,
+    Operacion,
+    PagoServicio,
+    Registro,
+    Transferencia,
+    CompletarCedula,
+)
 
 
 password_hasher = PasswordHash.recommended()
@@ -32,6 +40,7 @@ HASH_FICTICIO = password_hasher.hash("clave-interna-no-utilizada")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     inicializar_bd()
+    migrar_cedula()
     yield
 
 
@@ -115,12 +124,20 @@ def registrar(datos: Registro):
 
     try:
         with conexion(escritura=True) as db:
+
             cursor = db.execute(
                 """
-                INSERT INTO usuarios (nombre, usuario, password_hash)
-                VALUES (?, ?, ?)
+                INSERT INTO usuarios (
+                    nombre, usuario, password_hash, cedula
+                )
+                VALUES (?, ?, ?, ?)
                 """,
-                (datos.nombre, datos.usuario, password_hash),
+                (
+                    datos.nombre,
+                    datos.usuario,
+                    password_hash,
+                    datos.cedula,
+                ),
             )
 
             usuario_id = cursor.lastrowid
@@ -135,7 +152,7 @@ def registrar(datos: Registro):
     except sqlite3.IntegrityError:
         raise HTTPException(
             status_code=409,
-            detail="El nombre de usuario ya está registrado.",
+            detail="El nombre de usuario o la cédula ya están registrados.",
         )
 
     return {
@@ -537,3 +554,67 @@ async def websocket_cuenta(websocket: WebSocket):
 
     finally:
         gestor.eliminar(websocket)
+
+@app.get("/usuarios/me", tags=["Usuarios"])
+def mi_perfil(sesion=Depends(obtener_sesion)):
+    with conexion() as db:
+        usuario = db.execute(
+            """
+            SELECT id, nombre, usuario, cedula
+            FROM usuarios
+            WHERE id = ?
+            """,
+            (sesion["usuario_id"],),
+        ).fetchone()
+
+    if usuario is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Usuario no encontrado.",
+        )
+
+    return dict(usuario)
+
+
+@app.patch("/usuarios/me/cedula", tags=["Usuarios"])
+def completar_cedula(
+    datos: CompletarCedula,
+    sesion=Depends(obtener_sesion),
+):
+    try:
+        with conexion(escritura=True) as db:
+            usuario = db.execute(
+                "SELECT cedula FROM usuarios WHERE id = ?",
+                (sesion["usuario_id"],),
+            ).fetchone()
+
+            if usuario is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Usuario no encontrado.",
+                )
+
+            if (
+                usuario["cedula"] is not None
+                and usuario["cedula"] != datos.cedula
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="El usuario ya tiene una cédula asignada.",
+                )
+
+            db.execute(
+                "UPDATE usuarios SET cedula = ? WHERE id = ?",
+                (datos.cedula, sesion["usuario_id"]),
+            )
+
+    except sqlite3.IntegrityError:
+        raise HTTPException(
+            status_code=409,
+            detail="La cédula ya pertenece a otro usuario.",
+        )
+
+    return {
+        "mensaje": "Cédula registrada.",
+        "cedula": datos.cedula,
+    }
